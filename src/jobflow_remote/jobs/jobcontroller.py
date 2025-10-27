@@ -1049,6 +1049,8 @@ class JobController:
 
             if job_state in [JobState.READY]:
                 raise ValueError("The Job is in the READY state. No need to rerun.")
+            if job_state in [JobState.WAITING]:
+                raise ValueError("The Job is in the WAITING state. Cannot be rerun.")
             if job_state in RESETTABLE_STATES:
                 # if in one of the resettable states no need to lock the flow or
                 # update children.
@@ -2501,7 +2503,7 @@ class JobController:
         jobs_sort: list[tuple] | None = None,
         limit: int = 0,
         skip: int = 0,
-        with_jobs_info: bool = False,
+        with_jobs_info: bool | list = False,
     ) -> list[FlowInfo]:
         """
         Query for Flows based on standard parameters and return a list of FlowInfo.
@@ -2533,14 +2535,18 @@ class JobController:
         sort
             A list of (key, direction) pairs specifying the sort order for this
             query. Follows pymongo conventions.
+        jobs_sort
+            A list of (key, direction) pairs specifying the sort order for the
+            jobs of each Flow. Follows pymongo conventions.
         limit
             Maximum number of entries to retrieve. 0 means no limit.
         skip
             The number of documents to omit (from the start of the result set).
         with_jobs_info
-            If True, data is fetched from both the Flow collection and Job collection
-            with an aggregate and JobInfo for each job will be created.
-            Otherwise, only the Job information in the Flow document will be used.
+            If True or a list, data is fetched from both the Flow collection and
+            Job collection with an aggregate and JobInfo for each job will be created.
+            If a list, it should contain additional properties to add to the job info.
+            If False, only the Job information in the Flow document will be used.
 
         Returns
         -------
@@ -2562,7 +2568,12 @@ class JobController:
         # Only use the full aggregation if more job details are needed.
         # The single flow document is enough for basic information
         if with_jobs_info:
-            projection_job = {f: 1 for f in projection_flow_info_jobs}
+            if isinstance(with_jobs_info, bool):
+                projection_job = {f: 1 for f in projection_flow_info_jobs}
+            else:
+                projection_job = {
+                    f: 1 for f in projection_flow_info_jobs + with_jobs_info
+                }
             projection_flow = {k: 1 for k in FlowDoc.model_fields}
 
             data = self.get_flow_job_aggreg(
@@ -2753,7 +2764,7 @@ class JobController:
                             )
             # delete files after cancelling the queue job
             if delete_files:
-                self._safe_delete_files(jobs_info)
+                self.safe_delete_files(jobs_info)
 
         self.jobs.delete_many({"uuid": {"$in": job_ids}})
         self.flows.delete_one({"uuid": flow_id})
@@ -2827,7 +2838,7 @@ class JobController:
         )
         return result.modified_count
 
-    def _safe_delete_files(
+    def safe_delete_files(
         self, jobs_info: Sequence[JobInfo | dict]
     ) -> list[JobInfo | dict]:
         """
@@ -5030,7 +5041,7 @@ class JobController:
 
             if delete_files:
                 job_info = JobInfo.from_query_output(job_doc)
-                self._safe_delete_files([job_info])
+                self.safe_delete_files([job_info])
 
             return job_doc["db_id"]
 
